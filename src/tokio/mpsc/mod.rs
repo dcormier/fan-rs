@@ -304,6 +304,111 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn try_send_some_closed() {
+        let (tx1, mut rx1) = channel::<usize>(1);
+        let (tx2, rx2) = channel::<usize>(1);
+        let (tx3, mut rx3) = channel::<usize>(1);
+
+        let sender = FanOut::from([tx1, tx2, tx3]);
+
+        drop(rx2);
+
+        assert_eq!(
+            3,
+            sender.chans.lock().await.len(),
+            "All the channels should be in the collection"
+        );
+        assert_send_not_blocked(MS_10, &sender, 1).await;
+        assert_send_not_blocked(MS_10, &sender, 2).await;
+        assert_send_blocked(MS_10, &sender, 3).await;
+        assert_eq!(
+            2,
+            sender.chans.lock().await.len(),
+            "The closed channel should have been removed"
+        );
+        assert_eq!(1, recv_not_blocked(MS_10, &mut rx1).await);
+        assert_eq!(2, recv_not_blocked(MS_10, &mut rx3).await);
+
+        // Dropping the sender should close the remaining channels.
+        drop(sender);
+
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx1.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx3.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_send_basic() {
+        let (tx1, mut rx1) = channel::<usize>(1);
+        let (tx2, mut rx2) = channel::<usize>(1);
+        let (tx3, mut rx3) = channel::<usize>(1);
+
+        let sender = FanOut::from([tx1, tx2, tx3]);
+
+        // The order here is critical to the test.
+
+        // The channels each have a buffer size of 1. Fill them.
+        assert_try_send(&sender, 1).await;
+        assert_try_send(&sender, 2).await;
+        assert_try_send(&sender, 3).await;
+
+        // The channels should now be full, so we shouldn't be able to send.
+        assert_try_send_full(&sender, usize::MAX).await;
+
+        // Since all the channels are full, whichever one we read from should receive the next send.
+        assert_eq!(3, recv_not_blocked(MS_10, &mut rx3).await);
+        assert_try_send(&sender, 4).await;
+        assert_eq!(4, recv_not_blocked(MS_10, &mut rx3).await);
+
+        // OK, go ahead and read from these early ones.
+        assert_eq!(2, recv_not_blocked(MS_10, &mut rx2).await);
+        assert_eq!(1, recv_not_blocked(MS_10, &mut rx1).await);
+
+        // The channels should all be empty, now.
+        assert_eq!(
+            Err(TryRecvError::Empty),
+            rx1.try_recv(),
+            "Channel should be empty"
+        );
+        assert_eq!(
+            Err(TryRecvError::Empty),
+            rx2.try_recv(),
+            "Channel should be empty"
+        );
+        assert_eq!(
+            Err(TryRecvError::Empty),
+            rx3.try_recv(),
+            "Channel should be empty"
+        );
+
+        // Dropping the sender should close the channels.
+        drop(sender);
+
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx1.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx2.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx3.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+    }
+
     async fn send_not_blocked<T>(
         duration: Duration,
         sender: &FanOut<T>,
@@ -319,6 +424,12 @@ mod test {
             .await
             .unwrap_or_else(|err| panic!("Could not send: {}", err))
     }
+    async fn assert_try_send<T>(sender: &FanOut<T>, data: T)
+    where
+        T: Debug,
+    {
+        sender.try_send(data).await.expect("Could not send data")
+    }
 
     async fn assert_send_blocked<T>(duration: Duration, sender: &FanOut<T>, data: T)
     where
@@ -327,6 +438,29 @@ mod test {
         timeout(duration, sender.send(data))
             .await
             .expect_err("Should have gotten a timeout sending data, but did not");
+    }
+
+    async fn assert_try_send_full<T>(sender: &FanOut<T>, data: T)
+    where
+        T: Debug,
+    {
+        match sender.try_send(data).await {
+            Ok(()) => panic!("Channel should have been full, but still had capacity"),
+            Err(TrySendError::Closed(_)) => panic!("Channel should have been full, but was closed"),
+            Err(TrySendError::Full(_)) => {}
+        }
+    }
+
+    #[allow(dead_code)]
+    async fn assert_try_send_closed<T>(sender: &FanOut<T>, data: T)
+    where
+        T: Debug,
+    {
+        match sender.try_send(data).await {
+            Ok(()) => panic!("Channel should have been full, but still had capacity"),
+            Err(TrySendError::Full(_)) => panic!("Channel should have been closed, but was full"),
+            Err(TrySendError::Closed(_)) => {}
+        }
     }
 
     async fn recv_not_blocked<T>(duration: Duration, rx: &mut Receiver<T>) -> T {
