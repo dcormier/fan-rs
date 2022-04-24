@@ -17,11 +17,11 @@ pub struct FanOut<T> {
 }
 
 impl<T> FanOut<T> {
+    // Methods to reserve a permit cannot be implemented because it would require returning a
+    // reference to the reserved channel (inside the `Permit`), which cannot be done because of an
+    // internal lock on the collection of channels.
+
     /// Constructs a new `FanOut` from a `Vec<Sender<T>>`s.
-    ///
-    /// Methods to reserve a permit cannot be implemented because it would require returning a
-    /// reference to the reserved channel (inside the `Permit`), which cannot be done because of an
-    /// internal lock on the collection of channels.
     pub fn new(chans: Vec<Sender<T>>) -> Self {
         Self {
             chans: Arc::from(Mutex::new(chans)),
@@ -200,7 +200,7 @@ mod test {
     const MS_10: Duration = Duration::from_millis(10);
 
     #[tokio::test]
-    async fn basic_send() {
+    async fn send_basic() {
         let (tx1, mut rx1) = channel::<usize>(1);
         let (tx2, mut rx2) = channel::<usize>(1);
         let (tx3, mut rx3) = channel::<usize>(1);
@@ -254,6 +254,47 @@ mod test {
         assert_eq!(
             Err(TryRecvError::Disconnected),
             rx2.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx3.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_some_closed() {
+        let (tx1, mut rx1) = channel::<usize>(1);
+        let (tx2, rx2) = channel::<usize>(1);
+        let (tx3, mut rx3) = channel::<usize>(1);
+
+        let sender = FanOut::from([tx1, tx2, tx3]);
+
+        drop(rx2);
+
+        assert_eq!(
+            3,
+            sender.chans.lock().await.len(),
+            "All the channels should be in the collection"
+        );
+        assert_send_not_blocked(MS_10, &sender, 1).await;
+        assert_send_not_blocked(MS_10, &sender, 2).await;
+        assert_send_blocked(MS_10, &sender, 3).await;
+        assert_eq!(
+            2,
+            sender.chans.lock().await.len(),
+            "The closed channel should have been removed"
+        );
+        assert_eq!(1, recv_not_blocked(MS_10, &mut rx1).await);
+        assert_eq!(2, recv_not_blocked(MS_10, &mut rx3).await);
+
+        // Dropping the sender should close the remaining channels.
+        drop(sender);
+
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx1.try_recv(),
             "Channel should be disconnected once the FanOut has been dropped"
         );
         assert_eq!(
