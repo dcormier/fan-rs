@@ -3,9 +3,9 @@ name = "fan"
 authors = [
     "Daniel Cormier",
 ]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
-description = "Simplifys fanning-out (and eventually -in) with channels"
+description = "Simplifies fanning-out (and eventually -in) with channels"
 documentation = "https://docs.rs/fan/"
 repository = "https://github.com/dcormier/fan-rs"
 license= "Apache-2.0"
