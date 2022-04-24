@@ -3,7 +3,7 @@ name = "fan"
 authors = [
     "Daniel Cormier",
 ]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Simplifies fanning-out (and eventually -in) with channels"
 documentation = "https://docs.rs/fan/"

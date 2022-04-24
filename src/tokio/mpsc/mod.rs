@@ -152,7 +152,7 @@ impl<T> FanOut<T> {
         if let Some(closed) = closed {
             // Remove the closed channels from the collection so we don't try them anymore.
 
-            for index in closed {
+            for index in closed.into_iter().rev() {
                 chans.swap_remove(index);
             }
         }
@@ -305,43 +305,30 @@ mod test {
     }
 
     #[tokio::test]
-    async fn try_send_some_closed() {
-        let (tx1, mut rx1) = channel::<usize>(1);
+    async fn send_all_closed() {
+        let (tx1, rx1) = channel::<usize>(1);
         let (tx2, rx2) = channel::<usize>(1);
-        let (tx3, mut rx3) = channel::<usize>(1);
+        let (tx3, rx3) = channel::<usize>(1);
 
         let sender = FanOut::from([tx1, tx2, tx3]);
 
+        drop(rx1);
         drop(rx2);
+        drop(rx3);
 
         assert_eq!(
             3,
             sender.chans.lock().await.len(),
             "All the channels should be in the collection"
         );
-        assert_send_not_blocked(MS_10, &sender, 1).await;
-        assert_send_not_blocked(MS_10, &sender, 2).await;
-        assert_send_blocked(MS_10, &sender, 3).await;
+        timeout(MS_10, sender.send(usize::MAX))
+            .await
+            .expect("Timed out sending with no open channels")
+            .expect_err("Should have gotten an error when sending with no remaining open channels");
         assert_eq!(
-            2,
+            0,
             sender.chans.lock().await.len(),
-            "The closed channel should have been removed"
-        );
-        assert_eq!(1, recv_not_blocked(MS_10, &mut rx1).await);
-        assert_eq!(2, recv_not_blocked(MS_10, &mut rx3).await);
-
-        // Dropping the sender should close the remaining channels.
-        drop(sender);
-
-        assert_eq!(
-            Err(TryRecvError::Disconnected),
-            rx1.try_recv(),
-            "Channel should be disconnected once the FanOut has been dropped"
-        );
-        assert_eq!(
-            Err(TryRecvError::Disconnected),
-            rx3.try_recv(),
-            "Channel should be disconnected once the FanOut has been dropped"
+            "The closed channels should have been removed"
         );
     }
 
@@ -406,6 +393,76 @@ mod test {
             Err(TryRecvError::Disconnected),
             rx3.try_recv(),
             "Channel should be disconnected once the FanOut has been dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_send_some_closed() {
+        let (tx1, mut rx1) = channel::<usize>(1);
+        let (tx2, rx2) = channel::<usize>(1);
+        let (tx3, mut rx3) = channel::<usize>(1);
+
+        let sender = FanOut::from([tx1, tx2, tx3]);
+
+        drop(rx2);
+
+        assert_eq!(
+            3,
+            sender.chans.lock().await.len(),
+            "All the channels should be in the collection"
+        );
+        assert_send_not_blocked(MS_10, &sender, 1).await;
+        assert_send_not_blocked(MS_10, &sender, 2).await;
+        assert_send_blocked(MS_10, &sender, 3).await;
+        assert_eq!(
+            2,
+            sender.chans.lock().await.len(),
+            "The closed channel should have been removed"
+        );
+        assert_eq!(1, recv_not_blocked(MS_10, &mut rx1).await);
+        assert_eq!(2, recv_not_blocked(MS_10, &mut rx3).await);
+
+        // Dropping the sender should close the remaining channels.
+        drop(sender);
+
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx1.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+        assert_eq!(
+            Err(TryRecvError::Disconnected),
+            rx3.try_recv(),
+            "Channel should be disconnected once the FanOut has been dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_send_all_closed() {
+        let (tx1, rx1) = channel::<usize>(1);
+        let (tx2, rx2) = channel::<usize>(1);
+        let (tx3, rx3) = channel::<usize>(1);
+
+        let sender = FanOut::from([tx1, tx2, tx3]);
+
+        drop(rx1);
+        drop(rx2);
+        drop(rx3);
+
+        assert_eq!(
+            3,
+            sender.chans.lock().await.len(),
+            "All the channels should be in the collection"
+        );
+        assert_eq!(
+            Err(TrySendError::Closed(usize::MAX)),
+            sender.try_send(usize::MAX).await,
+            ""
+        );
+        assert_eq!(
+            0,
+            sender.chans.lock().await.len(),
+            "The closed channels should have been removed"
         );
     }
 
